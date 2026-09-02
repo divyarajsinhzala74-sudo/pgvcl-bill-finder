@@ -673,4 +673,9 @@ app.get(
         .status(500)
         .json({
           error:
-            "
+      res
+          .status(500)
+          .json({
+            error:
+              "Unable to retrieve the bill right now."
+          });
