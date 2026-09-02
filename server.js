@@ -484,7 +484,7 @@ async function processMonthlyPdf(
        const TEST_PAGE_LIMIT = pdf.numPages;
        ===================================================== */
 
-    const TEST_PAGE_LIMIT = 10;
+    const TEST_PAGE_LIMIT = pdf.numPages;
 
     const pagesToProcess =
       Math.min(
