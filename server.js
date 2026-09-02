@@ -1,6 +1,5 @@
 import express from "express";
 import multer from "multer";
-import Database from "better-sqlite3";
 import { PDFDocument } from "pdf-lib";
 import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf.mjs";
 import { createClient } from "@supabase/supabase-js";
