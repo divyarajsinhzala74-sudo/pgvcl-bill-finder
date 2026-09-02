@@ -1,1 +1,502 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#0b5cab"><title>PGVCL Bill Finder</title><style>body{margin:0;background:#f2f6fa;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial;color:#17202a}.wrap{max-width:560px;margin:auto;padding:18px}.card{background:#fff;border-radius:20px;padding:22px;box-shadow:0 5px 22px #0001;margin-top:25px}h1{margin:0 0 6px}.muted{color:#64748b}.label{font-weight:700;margin-top:22px;display:block}input,button{width:100%;box-sizing:border-box;padding:15px;border-radius:13px;font-size:18px;margin-top:8px}input{border:1px solid #cbd5e1}button{border:0;background:#0b5cab;color:white;font-weight:800}.status{margin-top:15px;padding:14px;border-radius:13px;background:#f1f5f9}.ok{background:#ecfdf5}.err{background:#fef2f2}.btn{display:block;text-align:center;text-decoration:none;padding:14px;border-radius:13px;margin-top:10px;background:#14833b;color:#fff;font-weight:800}.small{font-size:13px;color:#64748b;margin-top:18px}</style></head><body><div class="wrap"><div class="card"><h1>PGVCL Bill Finder</h1><div class="muted">View your latest electricity bill.</div><label class="label">Consumer Number</label><input id="c" inputmode="numeric" autocomplete="off" placeholder="Enter Consumer Number"><button id="b">View My Bill</button><div id="s" class="status">Enter your Consumer Number.</div><div id="r"></div><div class="small">Only your Consumer Number is required. The master PDF is managed by the office.</div></div></div><script>const c=document.getElementById('c'),b=document.getElementById('b'),s=document.getElementById('s'),r=document.getElementById('r');c.oninput=()=>c.value=c.value.replace(/\D/g,'');b.onclick=async()=>{const n=c.value;if(n.length<6){s.className='status err';s.textContent='Please enter a valid Consumer Number.';r.innerHTML='';return}b.disabled=true;s.className='status';s.textContent='Searching…';r.innerHTML='';try{const x=await fetch('/api/bill?consumer='+encodeURIComponent(n));const d=await x.json();if(!x.ok)throw Error(d.error);s.className='status ok';s.innerHTML='<b>Bill found ✓</b><br>Consumer No.: '+d.consumer_no+'<br>Bill Month: '+d.bill_month+(d.name?'<br>Name: '+d.name:'');r.innerHTML='<a class="btn" href="'+d.pdf_url+'" target="_blank">View Bill PDF</a><a class="btn" href="'+d.pdf_url+'" download="'+d.consumer_no+'_Bill.pdf">Download Bill PDF</a>'}catch(e){s.className='status err';s.textContent=e.message}finally{b.disabled=false}}</script></body></html>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1.0"
+  >
+
+  <title>PGVCL Bill Finder</title>
+
+  <style>
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      font-family: Arial, sans-serif;
+      background: #f1f5f9;
+      color: #172033;
+    }
+
+    .container {
+      width: 100%;
+      max-width: 620px;
+      margin: 0 auto;
+      padding: 20px 16px 40px;
+    }
+
+    .card {
+      background: white;
+      border-radius: 28px;
+      padding: 28px 22px;
+      box-shadow:
+        0 8px 30px rgba(0,0,0,0.08);
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 34px;
+      line-height: 1.15;
+      text-align: center;
+    }
+
+    .subtitle {
+      text-align: center;
+      margin-top: 10px;
+      margin-bottom: 30px;
+      color: #667085;
+      font-size: 18px;
+    }
+
+    label {
+      display: block;
+      font-size: 18px;
+      font-weight: bold;
+      margin-bottom: 10px;
+    }
+
+    input {
+      width: 100%;
+      height: 62px;
+      border: 2px solid #d0d5dd;
+      border-radius: 16px;
+      padding: 0 18px;
+      font-size: 20px;
+      outline: none;
+    }
+
+    input:focus {
+      border-color: #1769aa;
+    }
+
+    .main-button {
+      width: 100%;
+      height: 64px;
+      margin-top: 16px;
+      border: none;
+      border-radius: 16px;
+      background: #1769aa;
+      color: white;
+      font-size: 20px;
+      font-weight: bold;
+      cursor: pointer;
+    }
+
+    .main-button:disabled {
+      opacity: 0.6;
+      cursor: wait;
+    }
+
+    .result {
+      margin-top: 24px;
+      padding: 20px;
+      border-radius: 18px;
+      display: none;
+    }
+
+    .success {
+      background: #ecfdf3;
+      border: 1px solid #abefc6;
+    }
+
+    .error {
+      background: #fef3f2;
+      border: 1px solid #fecdca;
+    }
+
+    .result-title {
+      font-size: 22px;
+      font-weight: bold;
+      margin-bottom: 14px;
+    }
+
+    .detail {
+      font-size: 17px;
+      margin: 8px 0;
+    }
+
+    .pdf-button {
+      display: block;
+      width: 100%;
+      text-align: center;
+      text-decoration: none;
+      margin-top: 14px;
+      padding: 17px 10px;
+      border-radius: 15px;
+      background: #16803c;
+      color: white;
+      font-size: 19px;
+      font-weight: bold;
+    }
+
+    .pdf-button.secondary {
+      background: #126b32;
+    }
+
+    .note {
+      margin-top: 26px;
+      color: #667085;
+      font-size: 16px;
+      line-height: 1.45;
+      text-align: center;
+    }
+
+    .loading {
+      display: none;
+      text-align: center;
+      margin-top: 18px;
+      color: #667085;
+      font-size: 17px;
+    }
+
+  </style>
+</head>
+
+<body>
+
+  <div class="container">
+
+    <div class="card">
+
+      <h1>
+        PGVCL Bill Finder
+      </h1>
+
+      <div class="subtitle">
+        View your latest electricity bill.
+      </div>
+
+
+      <label for="consumer">
+        Consumer Number
+      </label>
+
+      <input
+        id="consumer"
+        type="tel"
+        inputmode="numeric"
+        maxlength="15"
+        placeholder="Enter Consumer Number"
+        autocomplete="off"
+      >
+
+
+      <button
+        id="searchButton"
+        class="main-button"
+        onclick="findBill()"
+      >
+        View My Bill
+      </button>
+
+
+      <div
+        id="loading"
+        class="loading"
+      >
+        Searching for your bill...
+      </div>
+
+
+      <div
+        id="success"
+        class="result success"
+      >
+
+        <div class="result-title">
+          Bill found ✓
+        </div>
+
+        <div class="detail">
+          <strong>Consumer No.:</strong>
+          <span id="consumerResult"></span>
+        </div>
+
+        <div class="detail">
+          <strong>Bill Month:</strong>
+          <span id="monthResult"></span>
+        </div>
+
+
+        <a
+          id="viewButton"
+          class="pdf-button"
+          href="#"
+          target="_blank"
+          rel="noopener"
+        >
+          View Bill PDF
+        </a>
+
+
+        <a
+          id="downloadButton"
+          class="pdf-button secondary"
+          href="#"
+          target="_blank"
+          rel="noopener"
+        >
+          Download Bill PDF
+        </a>
+
+      </div>
+
+
+      <div
+        id="error"
+        class="result error"
+      >
+
+        <div class="result-title">
+          Bill not found
+        </div>
+
+        <div id="errorMessage">
+          Please check your Consumer Number and try again.
+        </div>
+
+      </div>
+
+
+      <div class="note">
+        Only your Consumer Number is required.
+        The master PDF is managed by the office.
+      </div>
+
+    </div>
+
+  </div>
+
+
+<script>
+
+async function findBill() {
+
+  const input =
+    document.getElementById("consumer");
+
+  const button =
+    document.getElementById("searchButton");
+
+  const loading =
+    document.getElementById("loading");
+
+  const success =
+    document.getElementById("success");
+
+  const error =
+    document.getElementById("error");
+
+
+  const consumer =
+    input.value
+      .replace(/\D/g, "")
+      .trim();
+
+
+  /* ---------------------------------------------
+     VALIDATE CONSUMER NUMBER
+     --------------------------------------------- */
+
+  if (
+    !/^\d{8,15}$/.test(consumer)
+  ) {
+
+    showError(
+      "Please enter a valid Consumer Number."
+    );
+
+    return;
+  }
+
+
+  /* ---------------------------------------------
+     RESET UI
+     --------------------------------------------- */
+
+  success.style.display = "none";
+  error.style.display = "none";
+
+  loading.style.display = "block";
+
+  button.disabled = true;
+
+
+  try {
+
+    /* -------------------------------------------
+       CALL SERVER
+       ------------------------------------------- */
+
+    const response =
+      await fetch(
+        "/api/bill?consumer=" +
+        encodeURIComponent(consumer)
+      );
+
+
+    const data =
+      await response.json();
+
+
+    console.log(
+      "Bill API response:",
+      data
+    );
+
+
+    /* -------------------------------------------
+       SERVER ERROR
+       ------------------------------------------- */
+
+    if (!response.ok) {
+
+      throw new Error(
+        data.error ||
+        "Bill not found."
+      );
+
+    }
+
+
+    /* -------------------------------------------
+       CHECK URL
+       ------------------------------------------- */
+
+    if (!data.url) {
+
+      throw new Error(
+        "Bill was found, but the PDF link was not returned by the server."
+      );
+
+    }
+
+
+    /* -------------------------------------------
+       DISPLAY CORRECT DATA
+       
+       IMPORTANT:
+       server.js returns:
+       data.consumer
+       data.month
+       data.url
+       ------------------------------------------- */
+
+    document.getElementById(
+      "consumerResult"
+    ).textContent =
+      data.consumer || consumer;
+
+
+    document.getElementById(
+      "monthResult"
+    ).textContent =
+      data.month || "Latest";
+
+
+    /* -------------------------------------------
+       SET PDF BUTTON LINKS
+       ------------------------------------------- */
+
+    document.getElementById(
+      "viewButton"
+    ).href =
+      data.url;
+
+
+    document.getElementById(
+      "downloadButton"
+    ).href =
+      data.url;
+
+
+    /* -------------------------------------------
+       SHOW SUCCESS
+       ------------------------------------------- */
+
+    success.style.display =
+      "block";
+
+
+  } catch (err) {
+
+    console.error(
+      "Bill search error:",
+      err
+    );
+
+
+    showError(
+      err.message ||
+      "Unable to retrieve the bill right now."
+    );
+
+
+  } finally {
+
+    loading.style.display =
+      "none";
+
+    button.disabled =
+      false;
+
+  }
+
+}
+
+
+/* =================================================
+   ERROR DISPLAY
+   ================================================= */
+
+function showError(message) {
+
+  document.getElementById(
+    "success"
+  ).style.display = "none";
+
+
+  document.getElementById(
+    "errorMessage"
+  ).textContent =
+    message;
+
+
+  document.getElementById(
+    "error"
+  ).style.display =
+    "block";
+
+}
+
+
+/* =================================================
+   ENTER KEY SUPPORT
+   ================================================= */
+
+document
+  .getElementById("consumer")
+  .addEventListener(
+    "keydown",
+    function(event) {
+
+      if (
+        event.key === "Enter"
+      ) {
+
+        findBill();
+
+      }
+
+    }
+  );
+
+</script>
+
+</body>
+</html>
