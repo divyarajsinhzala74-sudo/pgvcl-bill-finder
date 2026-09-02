@@ -1,87 +1,279 @@
-import express from 'express';
-import multer from 'multer';
-import Database from 'better-sqlite3';
-import fs from 'fs';
-import path from 'path';
-import { fileURLToPath } from 'url';
-import { PDFDocument } from 'pdf-lib';
-import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs';
+import express from "express";
+import multer from "multer";
+import Database from "better-sqlite3";
+import { PDFDocument } from "pdf-lib";
+import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf.mjs";
+import { createClient } from "@supabase/supabase-js";
+import fs from "fs";
+import path from "path";
+import os from "os";
+import { fileURLToPath } from "url";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const DATA = path.join(__dirname, 'data');
-const BILLS = path.join(DATA, 'bills');
-fs.mkdirSync(BILLS, {recursive:true});
-const db = new Database(path.join(DATA,'pgvcl.db'));
-db.pragma('journal_mode = WAL');
-db.exec(`CREATE TABLE IF NOT EXISTS bills (id INTEGER PRIMARY KEY, consumer_no TEXT NOT NULL, bill_month TEXT NOT NULL, name TEXT, source_file TEXT, page_no INTEGER, pdf_path TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP, UNIQUE(consumer_no,bill_month));`);
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const app = express();
-app.use(express.json({limit:'1mb'}));
-app.use(express.urlencoded({extended:true}));
-app.use(express.static(path.join(__dirname,'public')));
-const upload = multer({dest:path.join(DATA,'uploads'), limits:{fileSize:50*1024*1024}});
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'CHANGE-ME';
+app.use(express.json());
 
-function auth(req,res,next){
-  if(req.headers['x-admin-password'] !== ADMIN_PASSWORD) return res.status(401).json({error:'Unauthorized'});
+const DATA = path.join(__dirname, "data");
+const UPLOADS = path.join(DATA, "uploads");
+fs.mkdirSync(UPLOADS, { recursive: true });
+
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "";
+const SUPABASE_URL = process.env.SUPABASE_URL || "";
+const SUPABASE_SECRET_KEY = process.env.SUPABASE_SECRET_KEY || "";
+const SUPABASE_BUCKET = "bills";
+
+if (!SUPABASE_URL || !SUPABASE_SECRET_KEY) {
+  console.warn("WARNING: SUPABASE_URL or SUPABASE_SECRET_KEY is missing.");
+}
+
+const supabase = createClient(SUPABASE_URL, SUPABASE_SECRET_KEY, {
+  auth: { persistSession: false, autoRefreshToken: false }
+});
+
+const upload = multer({
+  dest: UPLOADS,
+  limits: { fileSize: 50 * 1024 * 1024 }
+});
+
+function adminAuth(req, res, next) {
+  if (!ADMIN_PASSWORD || req.get("x-admin-password") !== ADMIN_PASSWORD) {
+    return res.status(401).json({ error: "Invalid admin password." });
+  }
   next();
 }
-function clean(s){return (s||'').replace(/\D/g,'');}
-function extractConsumer(text){const m=text.match(/Consumer\s*No\s*:\s*(\d{6,20})/i); return m?m[1]:null;}
-function extractName(text){
-  const m=text.match(/(?:District:[^|\n]+\s+)?([A-Z][A-Z .&'\-]{2,80})\s+\d{6,20}\s+Village:/i);
-  return m?m[1].trim():'';
-}
-async function processPdf(file, billMonth){
-  const data = new Uint8Array(fs.readFileSync(file));
-  const pdf = await pdfjsLib.getDocument({data}).promise;
-  const src = await PDFDocument.load(data);
-  let count=0;
-  const rows=[];
-  for(let p=1;p<=pdf.numPages;p++){
-    const page=await pdf.getPage(p); const tc=await page.getTextContent();
-    const text=tc.items.map(x=>x.str).join(' ');
-    const consumer=extractConsumer(text);
-    if(!consumer) continue;
-    const out=await PDFDocument.create(); const [copied]=await out.copyPages(src,[p-1]); out.addPage(copied);
-    const safe=consumer.replace(/[^0-9]/g,'');
-    const rel=path.join('bills',billMonth,`${safe}.pdf`); const abs=path.join(DATA,rel);
-    fs.mkdirSync(path.dirname(abs),{recursive:true}); fs.writeFileSync(abs,await out.save());
-    rows.push({consumer_no:consumer,bill_month:billMonth,name:extractName(text),source_file:path.basename(file),page_no:p,pdf_path:rel});
-    count++;
-  }
-  const tx=db.transaction(()=>{
-    for(const r of rows){
-      db.prepare(`INSERT INTO bills(consumer_no,bill_month,name,source_file,page_no,pdf_path) VALUES(@consumer_no,@bill_month,@name,@source_file,@page_no,@pdf_path) ON CONFLICT(consumer_no,bill_month) DO UPDATE SET name=excluded.name,source_file=excluded.source_file,page_no=excluded.page_no,pdf_path=excluded.pdf_path,created_at=CURRENT_TIMESTAMP`).run(r);
-    }
-  }); tx();
-  return {pages:pdf.numPages,found:count};
+
+function cleanConsumer(value) {
+  return String(value || "").replace(/\D/g, "");
 }
 
-app.get('/api/latest', (req,res)=>{
-  const row=db.prepare(`SELECT bill_month FROM bills ORDER BY bill_month DESC LIMIT 1`).get();
-  res.json({bill_month:row?.bill_month||null});
+function extractConsumerNo(text) {
+  const patterns = [
+    /Consumer\s*No\s*[:\-]?\s*(\d{8,15})/i,
+    /Consumer\s*Number\s*[:\-]?\s*(\d{8,15})/i,
+    /Consumer\s*No\.\s*[:\-]?\s*(\d{8,15})/i
+  ];
+  for (const re of patterns) {
+    const m = text.match(re);
+    if (m) return cleanConsumer(m[1]);
+  }
+  return null;
+}
+
+async function getLatestIndex() {
+  const { data, error } = await supabase.storage
+    .from(SUPABASE_BUCKET)
+    .download("index/latest.json");
+
+  if (error) {
+    if (error.message?.toLowerCase().includes("not found")) return {};
+    throw error;
+  }
+
+  const text = Buffer.from(await data.arrayBuffer()).toString("utf8");
+  return JSON.parse(text || "{}");
+}
+
+async function saveLatestIndex(index) {
+  const body = Buffer.from(JSON.stringify(index, null, 2), "utf8");
+  const { error } = await supabase.storage
+    .from(SUPABASE_BUCKET)
+    .upload("index/latest.json", body, {
+      contentType: "application/json",
+      upsert: true,
+      cacheControl: "60"
+    });
+
+  if (error) throw error;
+}
+
+async function uploadBill(month, consumer, bytes) {
+  const objectPath = `${month}/${consumer}.pdf`;
+
+  const { error } = await supabase.storage
+    .from(SUPABASE_BUCKET)
+    .upload(objectPath, bytes, {
+      contentType: "application/pdf",
+      upsert: true,
+      cacheControl: "31536000"
+    });
+
+  if (error) throw error;
+  return objectPath;
+}
+
+async function signedBillUrl(objectPath) {
+  const { data, error } = await supabase.storage
+    .from(SUPABASE_BUCKET)
+    .createSignedUrl(objectPath, 300);
+
+  if (error) throw error;
+  return data.signedUrl;
+}
+
+app.get("/api/health", (req, res) => {
+  res.json({
+    ok: true,
+    supabaseConfigured: Boolean(SUPABASE_URL && SUPABASE_SECRET_KEY)
+  });
 });
-app.get('/api/bill', (req,res)=>{
-  const c=clean(req.query.consumer);
-  if(c.length<6) return res.status(400).json({error:'Enter a valid Consumer Number.'});
-  const row=db.prepare(`SELECT consumer_no,bill_month,name,page_no FROM bills WHERE consumer_no=? ORDER BY bill_month DESC LIMIT 1`).get(c);
-  if(!row) return res.status(404).json({error:'Consumer Number not found.'});
-  res.json({...row, pdf_url:`/api/bill/${row.bill_month}/${row.consumer_no}.pdf`});
+
+app.get("/api/bill", async (req, res) => {
+  try {
+    const consumer = cleanConsumer(req.query.consumer);
+
+    if (!/^\d{8,15}$/.test(consumer)) {
+      return res.status(400).json({ error: "Enter a valid Consumer Number." });
+    }
+
+    const index = await getLatestIndex();
+    const record = index[consumer];
+
+    if (!record?.path) {
+      return res.status(404).json({ error: "Bill not found for this Consumer Number." });
+    }
+
+    const url = await signedBillUrl(record.path);
+
+    res.json({
+      ok: true,
+      consumer,
+      month: record.month,
+      url
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Unable to retrieve the bill right now." });
+  }
 });
-app.get('/api/bill/:month/:consumer.pdf',(req,res)=>{
-  const c=clean(req.params.consumer); const row=db.prepare(`SELECT pdf_path FROM bills WHERE consumer_no=? AND bill_month=?`).get(c,req.params.month);
-  if(!row) return res.status(404).send('Bill not found');
-  const abs=path.join(DATA,row.pdf_path); if(!fs.existsSync(abs)) return res.status(404).send('Bill file missing');
-  res.setHeader('Content-Type','application/pdf'); res.setHeader('Content-Disposition',`inline; filename="${c}_Bill.pdf"`); res.sendFile(abs);
+
+app.get("/api/bill/:month/:consumer.pdf", async (req, res) => {
+  try {
+    const consumer = cleanConsumer(req.params.consumer);
+    const month = req.params.month;
+
+    if (!/^\d{4}-\d{2}$/.test(month) || !/^\d{8,15}$/.test(consumer)) {
+      return res.status(400).send("Invalid request.");
+    }
+
+    const url = await signedBillUrl(`${month}/${consumer}.pdf`);
+    res.redirect(url);
+  } catch (err) {
+    console.error(err);
+    res.status(404).send("Bill not found.");
+  }
 });
-app.get('/api/admin/stats',auth,(req,res)=>{res.json({bills:db.prepare('SELECT COUNT(*) c FROM bills').get().c, months:db.prepare('SELECT bill_month,COUNT(*) count FROM bills GROUP BY bill_month ORDER BY bill_month DESC').all()});});
-app.post('/api/admin/upload',auth,upload.single('pdf'),async(req,res)=>{
-  try{
-    if(!req.file) return res.status(400).json({error:'PDF is required.'});
-    const month=(req.body.month||'').trim(); if(!/^\d{4}-\d{2}$/.test(month)) return res.status(400).json({error:'Month must be YYYY-MM.'});
-    const result=await processPdf(req.file.path,month); fs.unlinkSync(req.file.path); res.json({ok:true,...result,bill_month:month});
-  }catch(e){console.error(e); try{if(req.file?.path)fs.unlinkSync(req.file.path)}catch{} res.status(500).json({error:e.message});}
+
+app.post("/api/admin/upload", adminAuth, upload.single("pdf"), async (req, res) => {
+  let tempPath = null;
+
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: "Please upload a master PDF." });
+    }
+
+    const month = String(req.body.month || "").trim();
+    if (!/^\d{4}-\d{2}$/.test(month)) {
+      return res.status(400).json({ error: "Bill month must be YYYY-MM." });
+    }
+
+    tempPath = req.file.path;
+
+    const buffer = await fs.promises.readFile(tempPath);
+    const sourcePdf = await PDFDocument.load(buffer);
+    const pdfData = new Uint8Array(buffer);
+
+    const loadingTask = pdfjsLib.getDocument({
+      data: pdfData,
+      disableWorker: true,
+      useWorkerFetch: false,
+      isEvalSupported: false
+    });
+
+    const pdf = await loadingTask.promise;
+    const pageCount = pdf.numPages;
+
+    const newIndex = {};
+    let processed = 0;
+    let skipped = 0;
+    const failures = [];
+
+    for (let pageNo = 1; pageNo <= pageCount; pageNo++) {
+      try {
+        const page = await pdf.getPage(pageNo);
+        const content = await page.getTextContent();
+        const text = content.items.map(item => item.str || "").join(" ");
+        const consumer = extractConsumerNo(text);
+
+        if (!consumer) {
+          skipped++;
+          continue;
+        }
+
+        const onePagePdf = await PDFDocument.create();
+        const [copiedPage] = await onePagePdf.copyPages(sourcePdf, [pageNo - 1]);
+        onePagePdf.addPage(copiedPage);
+        const onePageBytes = await onePagePdf.save();
+
+        const objectPath = await uploadBill(month, consumer, onePageBytes);
+
+        newIndex[consumer] = {
+          month,
+          path: objectPath,
+          updatedAt: new Date().toISOString()
+        };
+
+        processed++;
+      } catch (pageError) {
+        console.error(`Page ${pageNo} failed:`, pageError);
+        failures.push({ page: pageNo, error: String(pageError.message || pageError) });
+      }
+    }
+
+    if (processed === 0) {
+      return res.status(422).json({
+        error: "No Consumer Numbers were found in the uploaded PDF.",
+        pageCount,
+        skipped,
+        failures: failures.slice(0, 20)
+      });
+    }
+
+    // Preserve older consumers while replacing/updating consumers found in this month.
+    const oldIndex = await getLatestIndex();
+    const mergedIndex = { ...oldIndex, ...newIndex };
+    await saveLatestIndex(mergedIndex);
+
+    res.json({
+      ok: true,
+      month,
+      pageCount,
+      processed,
+      skipped,
+      failedPages: failures.length,
+      message: `Successfully processed ${processed} bills for ${month}.`
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({
+      error: "Monthly PDF processing failed.",
+      details: String(err.message || err)
+    });
+  } finally {
+    if (tempPath) {
+      try { await fs.promises.unlink(tempPath); } catch {}
+    }
+  }
 });
-app.get('/admin',(req,res)=>res.sendFile(path.join(__dirname,'public','admin.html')));
-app.listen(process.env.PORT||3000,()=>console.log('PGVCL Bill Finder V3 running'));
+
+app.get("/admin", (req, res) => {
+  res.sendFile(path.join(__dirname, "public", "admin.html"));
+});
+
+app.use(express.static(path.join(__dirname, "public")));
+
+const PORT = Number(process.env.PORT || 10000);
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(`PGVCL Bill Finder running on port ${PORT}`);
+});
